@@ -1,6 +1,13 @@
 /* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  * Copyright (C) 2014 Sony Mobile Communications Inc. All rights reserved.
+ * Copyright (C) 2017 Tristan Marsell (tristan.marsell@t-online.de). All rights reserved.
+ * Copyright (C) 2017 Team ReDesire. All rights reserved.
+ * 
+ * PDesireAudio WCD9320 Taiko Audio Driver
+ * Copyright (C) 2017 Tristan Marsell (tristan.marsell@t-online.de). All rights reserved.
+ * Copyright (C) 2017 Team Project Desire. All rights reserved.
  *
+ * NOTE: This file is licensed under GPL v2 also with modifications.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -42,6 +49,7 @@
 #include "wcd9xxx-resmgr.h"
 #include "wcd9xxx-common.h"
 #include "wcdcal-hwdep.h"
+#include <sound/pdesireaudio/api.h>
 
 
 #define TAIKO_MAD_SLIMBUS_TX_PORT 12
@@ -62,6 +70,158 @@ static atomic_t kp_taiko_priv;
 static int spkr_drv_wrnd_param_set(const char *val,
 				   const struct kernel_param *kp);
 static int spkr_drv_wrnd = 1;
+
+//PDesireAudio Version: 11.0 Auralia
+static int PDesireAudio = 1;
+module_param(PDesireAudio, int,
+			S_IRUGO | S_IWUSR | S_IWGRP);
+MODULE_PARM_DESC(PDesireAudio, "PDesireAudio UHQA Audio output switch");
+
+static int pdesireaudio_static_mode;
+module_param(pdesireaudio_static_mode, int,
+			S_IRUGO | S_IWUSR | S_IWGRP);
+MODULE_PARM_DESC(pdesireaudio_static_mode, "Set PDesireAudio to static mode, so User can just control via kernelspace without changes due dynamic changes");
+
+#pragma message("You are using a PDesireAudio powered kernel for now")
+
+/*
+ * To make debugging easier, PDesireAudio uses now a own syntax of outprint 
+ * The way how to use this method is:
+ * pdesireaudio_api_print(message, error_code);
+ * 
+ * int error_code has 3 different stages:
+ * 0 = Fatal Error
+ * 1 = Warning
+ * 2 = Debug
+ */
+int pdesireaudio_api_print(const char *message, int error_code) 
+{
+	char *err;
+	
+	switch (error_code) {
+		case 0:
+			err = "Fatal Error:";
+		break;
+		case 1:
+			err = "Warning:";
+		break;
+		case 2:
+			err = "Debug:";
+		break;
+		default:
+			pr_err("No Error Code defined");
+		return 0;
+	}
+	pr_info("PDesireAudio: %s %s. Code %d", err, message, error_code);
+	return 1;
+}
+
+int pdesireaudio_is_enabled(void) 
+{
+	if (PDesireAudio)
+		return 1;
+	else 
+		return 0;
+}
+
+int pdesireaudio_start(void) 
+{
+	if (!pdesireaudio_static_mode)
+	{
+		pdesireaudio_api_print("Enable PDesireAudio", 2);
+		PDesireAudio = 1;
+	}
+	
+	return 1;
+}
+
+int pdesireaudio_remove(void) 
+{
+	if (!pdesireaudio_static_mode)
+	{
+		pdesireaudio_api_print("Disable PDesireAudio", 2);
+		PDesireAudio = 0;
+	}
+	
+	return 1;
+} 
+
+int pdesireaudio_init(void) 
+{
+	if (!pdesireaudio_static_mode)
+	{
+		pdesireaudio_api_print("Re-Init PDesireAudio", 2);
+
+
+		if (pdesireaudio_remove() != 1) 
+		{
+			pdesireaudio_api_print("Remove PDesireAudio failed", 0);
+			return 0;
+		}
+			
+		if (PDesireAudio) 
+		{
+			if (pdesireaudio_start() != 1) 
+			{
+				pdesireaudio_api_print("Starting PDesireAudio failed", 0);
+				return 0;
+			}	
+			if (PDesireAudio > 1)
+				PDesireAudio = 1;
+		}
+	}
+	
+	return 1;
+}
+
+void pdesireaudio_api_static_mode_control(bool enable)
+{
+	if(enable == true) 
+	{
+		pr_info("Set PDesireAudio to static mode");
+		pdesireaudio_static_mode = 1;
+	} else {
+		pr_info("Set PDesireAudio to dynamic mode");
+		pdesireaudio_static_mode = 0;
+	}
+}
+
+
+/* API Modes for PDesireAudio */
+int enable_pdesireaudio(void) 
+{
+	if (pdesireaudio_start() != 1) {
+		pdesireaudio_api_print("Starting PDesireAudio failed", 0);
+		return 0;
+	}	
+	
+	if (pdesireaudio_init() != 1) {
+		pdesireaudio_api_print("Init PDesireAudio failed", 0);
+		return 0;
+	}	
+	
+	return 1;
+}
+
+int disable_pdesireaudio(void) {
+	if (pdesireaudio_remove() != 1) {
+		pdesireaudio_api_print("Removing PDesireAudio failed", 0);
+		return 0;
+	}
+	if (pdesireaudio_init() != 1) {
+		pdesireaudio_api_print("Init PDesireAudio failed", 0);
+		return 0;
+	}		
+	return 1;
+}
+
+int reinit_pdesireaudio(void) {
+	if (pdesireaudio_init() != 1) {
+		pdesireaudio_api_print("Init PDesireAudio failed", 0);
+		return 0;
+	}		
+	return 1;
+}
 
 static struct kernel_param_ops spkr_drv_wrnd_param_ops = {
 	.set = spkr_drv_wrnd_param_set,
@@ -442,6 +602,9 @@ struct taiko_priv {
 	struct wcd9xxx_resmgr resmgr;
 	/* mbhc module */
 	struct wcd9xxx_mbhc mbhc;
+	
+	/* UHQA (class AB) mode */
+	u8 uhqa_mode;
 
 	/* class h specific data */
 	struct wcd9xxx_clsh_cdc_data clsh_d;
@@ -580,6 +743,18 @@ static int spkr_drv_wrnd_param_set(const char *val,
 	mutex_unlock(&codec->mutex);
 
 	return 0;
+}
+
+static int taiko_update_uhqa_mode(struct snd_soc_codec *codec, int path)
+{
+	int ret = 0;
+	struct taiko_priv *taiko_p = snd_soc_codec_get_drvdata(codec);
+
+	if (PDesireAudio) {
+		taiko_p->uhqa_mode = 1;
+	}
+	dev_dbg(codec->dev, "%s: uhqa_mode=%d", __func__, taiko_p->uhqa_mode);
+	return ret;
 }
 
 static int taiko_get_anc_slot(struct snd_kcontrol *kcontrol,
@@ -848,8 +1023,12 @@ static int taiko_get_compander(struct snd_kcontrol *kcontrol,
 	int comp = ((struct soc_multi_mixer_control *)
 		    kcontrol->private_value)->shift;
 	struct taiko_priv *taiko = snd_soc_codec_get_drvdata(codec);
+	
+	if (PDesireAudio) 
+		return 0;
 
 	ucontrol->value.integer.value[0] = taiko->comp_enabled[comp];
+	
 	return 0;
 }
 
@@ -861,13 +1040,20 @@ static int taiko_set_compander(struct snd_kcontrol *kcontrol,
 	int comp = ((struct soc_multi_mixer_control *)
 		    kcontrol->private_value)->shift;
 	int value = ucontrol->value.integer.value[0];
+	bool comp_bypass;
+	
+	if (!PDesireAudio)
+		comp_bypass = false;
+	  else 
+		comp_bypass = true;
 
 	pr_debug("%s: Compander %d enable current %d, new %d\n",
 		 __func__, comp, taiko->comp_enabled[comp], value);
 	taiko->comp_enabled[comp] = value;
 
 	if (comp == COMPANDER_1 &&
-			taiko->comp_enabled[comp] == 1) {
+			taiko->comp_enabled[comp] == 1 &&
+			comp_bypass == false) {
 		/* Wavegen to 5 msec */
 		snd_soc_write(codec, TAIKO_A_RX_HPH_CNP_WG_CTL, 0xDA);
 		snd_soc_write(codec, TAIKO_A_RX_HPH_CNP_WG_TIME, 0x15);
@@ -902,6 +1088,9 @@ static int taiko_config_gain_compander(struct snd_soc_codec *codec,
 				       int comp, bool enable)
 {
 	int ret = 0;
+	
+	if (PDesireAudio)
+		return ret;
 
 	switch (comp) {
 	case COMPANDER_0:
@@ -934,11 +1123,13 @@ static int taiko_config_gain_compander(struct snd_soc_codec *codec,
 
 static void taiko_discharge_comp(struct snd_soc_codec *codec, int comp)
 {
-	/* Level meter DIV Factor to 5*/
-	snd_soc_update_bits(codec, TAIKO_A_CDC_COMP0_B2_CTL + (comp * 8), 0xF0,
-			    0x05 << 4);
-	/* RMS meter Sampling to 0x01 */
-	snd_soc_write(codec, TAIKO_A_CDC_COMP0_B3_CTL + (comp * 8), 0x01);
+	if (!PDesireAudio) {
+		/* Level meter DIV Factor to 5*/
+		snd_soc_update_bits(codec, TAIKO_A_CDC_COMP0_B2_CTL + (comp * 8), 0xF0,
+					0x05 << 4);
+		/* RMS meter Sampling to 0x01 */
+		snd_soc_write(codec, TAIKO_A_CDC_COMP0_B3_CTL + (comp * 8), 0x01);
+	}
 
 	/* Worst case timeout for compander CnP sleep timeout */
 	usleep_range(3000, 3000);
@@ -985,6 +1176,9 @@ static int taiko_config_compander(struct snd_soc_dapm_widget *w,
 	if (!taiko->comp_enabled[comp])
 		return 0;
 
+	if (PDesireAudio)
+		return 0;
+		
 	/* Compander 0 has single channel */
 	mask = (comp == COMPANDER_0 ? 0x01 : 0x03);
 	enable_mask = (comp == COMPANDER_0 ? 0x02 : 0x03);
@@ -2522,10 +2716,17 @@ static int taiko_codec_enable_lineout(struct snd_soc_dapm_widget *w,
 		snd_soc_update_bits(codec, lineout_gain_reg, 0x40, 0x40);
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		wcd9xxx_clsh_fsm(codec, &taiko->clsh_d,
-						 WCD9XXX_CLSH_STATE_LO,
+		if (!PDesireAudio) {
+			wcd9xxx_clsh_fsm(codec, &taiko->clsh_d,
+						 WCD9XXX_CLSH_STATE_HPHR,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_POST_PA);
+		} else {
+			pdesireaudio_uhqa_mode(codec, &taiko->clsh_d,
+						taiko->uhqa_mode,
+						WCD9XXX_CLSAB_STATE_HPHR,
+						WCD9XXX_CLSAB_REQ_ENABLE);
+		}
 		pr_debug("%s: sleeping 5 ms after %s PA turn on\n",
 				__func__, w->name);
 		/* Wait for CnP time after PA enable */
@@ -2551,8 +2752,7 @@ static int taiko_codec_enable_spk_pa(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_codec *codec = w->codec;
 	struct taiko_priv *taiko = snd_soc_codec_get_drvdata(codec);
-
-	pr_debug("%s: %d %s\n", __func__, event, w->name);
+		
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		taiko->spkr_pa_widget_on = true;
@@ -3156,6 +3356,9 @@ static int taiko_codec_enable_interpolator(struct snd_soc_dapm_widget *w,
 				  snd_soc_read(codec,
 				  rx_digital_gain_reg[w->shift])
 				  );
+			/* Check for Rx1 and Rx2 paths for uhqa mode update */
+			if (w->shift == 0 || w->shift == 1)
+				taiko_update_uhqa_mode(codec, (1 << w->shift));
 		break;
 	}
 	return 0;
@@ -3256,10 +3459,17 @@ static int taiko_hphl_dac_event(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 		snd_soc_update_bits(codec, TAIKO_A_CDC_CLK_RDAC_CLK_EN_CTL,
 							0x02, 0x02);
-		wcd9xxx_clsh_fsm(codec, &taiko_p->clsh_d,
+		if (!PDesireAudio) {
+			wcd9xxx_clsh_fsm(codec, &taiko_p->clsh_d,
 						 WCD9XXX_CLSH_STATE_HPHL,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_PRE_DAC);
+		} else {
+			pdesireaudio_uhqa_mode(codec, &taiko_p->clsh_d,
+						taiko_p->uhqa_mode,
+						WCD9XXX_CLSAB_STATE_HPHL,
+						WCD9XXX_CLSAB_REQ_ENABLE);
+		}
 		ret = wcd9xxx_mbhc_get_impedance(&taiko_p->mbhc,
 					&impedl, &impedr);
 		if (!ret)
@@ -3289,10 +3499,17 @@ static int taiko_hphr_dac_event(struct snd_soc_dapm_widget *w,
 		snd_soc_update_bits(codec, TAIKO_A_CDC_CLK_RDAC_CLK_EN_CTL,
 							0x04, 0x04);
 		snd_soc_update_bits(codec, w->reg, 0x40, 0x40);
-		wcd9xxx_clsh_fsm(codec, &taiko_p->clsh_d,
+		if (!PDesireAudio) {
+			wcd9xxx_clsh_fsm(codec, &taiko_p->clsh_d,
 						 WCD9XXX_CLSH_STATE_HPHR,
 						 WCD9XXX_CLSH_REQ_ENABLE,
 						 WCD9XXX_CLSH_EVENT_PRE_DAC);
+		} else {
+			pdesireaudio_uhqa_mode(codec, &taiko_p->clsh_d,
+						taiko_p->uhqa_mode,
+						WCD9XXX_CLSAB_STATE_HPHR,
+						WCD9XXX_CLSAB_REQ_ENABLE);
+		}
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		snd_soc_update_bits(codec, TAIKO_A_CDC_CLK_RDAC_CLK_EN_CTL,
@@ -3453,6 +3670,9 @@ static int taiko_hph_pa_event(struct snd_soc_dapm_widget *w,
 		pr_err("%s: Invalid w->shift %d\n", __func__, w->shift);
 		return -EINVAL;
 	}
+	
+	if (PDesireAudio)
+		return 0;
 
 	if (taiko->comp_enabled[COMPANDER_1])
 		pa_settle_time = TAIKO_HPH_PA_SETTLE_COMP_ON;
@@ -6810,6 +7030,8 @@ static int taiko_post_reset_cb(struct wcd9xxx *wcd9xxx)
 	struct taiko_priv *taiko;
 	int rco_clk_rate;
 	int count;
+	
+	pdesireaudio_init();
 
 	codec = (struct snd_soc_codec *)(wcd9xxx->ssr_priv);
 	taiko = snd_soc_codec_get_drvdata(codec);
@@ -7307,6 +7529,12 @@ static struct platform_driver taiko_codec_driver = {
 
 static int __init taiko_codec_init(void)
 {
+	if (pdesireaudio_init() != 1) 
+	{
+		pdesireaudio_api_print("First PDesireAudio initialization failed, PDesireAudio inactive", 0);
+		PDesireAudio = 0;
+	}
+	
 	return platform_driver_register(&taiko_codec_driver);
 }
 
@@ -7318,5 +7546,5 @@ static void __exit taiko_codec_exit(void)
 module_init(taiko_codec_init);
 module_exit(taiko_codec_exit);
 
-MODULE_DESCRIPTION("Taiko codec driver");
+MODULE_DESCRIPTION("PDesireAudio Taiko codec driver");
 MODULE_LICENSE("GPL v2");
